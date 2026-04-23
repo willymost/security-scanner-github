@@ -1,0 +1,48 @@
+# Generates consolidated security reports from all findings in this repo.
+# Runs weekly, on every findings push, and on manual dispatch.
+
+name: Generate Security Report
+
+on:
+  schedule:
+    # Weekly Monday 06:00 UTC — runs after source repos scan at 02:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "findings/**"
+
+permissions:
+  contents: write   # needed to commit reports/ back to main
+
+jobs:
+  generate-report:
+    name: Generate consolidated report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate report
+        run: |
+          mkdir -p reports
+          python scripts/generate_report.py
+
+      - name: Commit and push reports
+        run: |
+          git config user.name  "security-report-bot"
+          git config user.email "security-report-bot@users.noreply.github.com"
+          git add reports/
+          if git diff --cached --quiet; then
+            echo "No report changes to commit."
+          else
+            git commit -m "report: security summary $(date -u +%Y-%m-%d)"
+            git push origin main
+          fi

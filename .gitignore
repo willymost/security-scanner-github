@@ -1,0 +1,10 @@
+# Local config (contains credentials)
+.env
+
+# Generated report files (written at runtime by the hub workflow)
+central-repo/reports/**
+!central-repo/reports/.gitkeep
+
+# Python cache
+**/__pycache__/
+*.pyc
