@@ -402,11 +402,14 @@ jobs:
             const out = process.argv[1];
             const load = p => { try { return JSON.parse(fs.readFileSync(p,"utf8")); } catch(e) { return null; } };
             const meta = load("artifacts/metadata.json") || {};
-            const repo = meta.repository || "unknown";
+            const repo = meta.repo_name || "unknown";
+            const repoFullName = meta.repository || "unknown";
             const commit = (meta.commit_sha || "").slice(0,8);
             const branch = meta.branch || "";
             const runUrl = meta.run_url || "";
+            const runId = meta.run_id || "";
             const now = new Date().toISOString();
+            const dateStr = now.slice(0,10);
             const semSast = load("artifacts/semgrep-sast/semgrep-sast.json");
             const semSca  = load("artifacts/semgrep-sca/semgrep-sca.json");
             const grype   = load("artifacts/sca/grype-results.json");
@@ -423,35 +426,157 @@ jobs:
             const lc = {CRITICAL:0,HIGH:gl.length,MEDIUM:0,LOW:0,INFO:0};
             const tot={}; ["CRITICAL","HIGH","MEDIUM","LOW"].forEach(k=>{tot[k]=(sc[k]||0)+(sc2[k]||0)+(gc[k]||0)+(lc[k]||0);});
             const h=r => "| "+r; const mkd = p=>fs.mkdirSync(p,{recursive:true});
-            const dir = out+"/reports/"+repo; mkd(dir);
-            // Security report
-            let sec = "# Security Report — "+repo+"\n\n";
-            sec += "| Field | Value |\n|-------|-------|";
-            sec += "\n| Repository | "+repo+" |";
-            sec += "\n| Branch | "+branch+" |";
-            sec += "\n| Commit | `"+commit+"` |";
-            sec += "\n| Generated | "+now+" |";
-            sec += "\n| Run | [Action run]("+runUrl+") |";
-            sec += "\n| Report Type | security |";
-            sec += "\n\n---\n\n";
-            const icons = {CRITICAL:"🔴",HIGH:"🟠",MEDIUM:"🟡",LOW:"🔵"};
-            if (Object.values(tot).some(v=>v>0)) {
-              const ic = tot.CRITICAL>0?icons.CRITICAL:tot.HIGH>0?icons.HIGH:tot.MEDIUM>0?icons.MEDIUM:"🟢";
-              sec += "## "+ic+" Security Scan Results\n\n";
-              sec += "| Tool | Critical | High | Medium | Low |\n|------|----------|------|--------|-----|";
-              sec += h("Semgrep SAST | "+(sc.CRITICAL||0)+" | "+(sc.HIGH||0)+" | "+(sc.MEDIUM||0)+" | "+(sc.LOW||0)+" |");
-              sec += h("Semgrep SCA  | "+(sc2.CRITICAL||0)+" | "+(sc2.HIGH||0)+" | "+(sc2.MEDIUM||0)+" | "+(sc2.LOW||0)+" |");
-              sec += h("Grype        | "+(gc.CRITICAL||0)+" | "+(gc.HIGH||0)+" | "+(gc.MEDIUM||0)+" | "+(gc.LOW||0)+" |");
-              sec += h("Gitleaks     | "+(lc.CRITICAL||0)+" | "+(lc.HIGH||0)+" | "+(lc.MEDIUM||0)+" | "+(lc.LOW||0)+" |");
-              sec += h("**Total**    | **"+tot.CRITICAL+"** | **"+tot.HIGH+"** | **"+tot.MEDIUM+"** | **"+tot.LOW+"** |");
-            } else {
-              sec += "## 🟢 Security Scan Results — No Findings\n\nNo vulnerabilities or secrets detected.";
+            const base = out+"/reports/"+repo;
+            const runDir = base+"/"+dateStr+"/"+runId;
+            mkd(runDir);
+
+            // ---- Security report (rich format) ----
+            const icons = {CRITICAL:"🔴",HIGH:"🟠",MEDIUM:"🟡",LOW:"🔵",INFO:"⚪"};
+            const iconForTot = t => tot[t.CRITICAL>0?"CRITICAL":tot.HIGH>0?"HIGH":tot.MEDIUM>0?"MEDIUM":"LOW"]||"🟢";
+
+            const totalFindings = tot.CRITICAL+tot.HIGH+tot.MEDIUM+tot.LOW;
+
+            let sec = "# Security Scan — "+repo+"\n\n";
+            sec += "**Date**: "+dateStr+"  \n";
+            sec += "**Run**: "+(runUrl?"["+runId+"]("+runUrl+")":runId)+"  \n";
+            sec += "**Branch**: `"+branch+"`  \n";
+            sec += "**Commit**: `"+commit+"`  \n";
+            sec += "**Total findings**: "+totalFindings;
+            sec += " ("+tot.CRITICAL+" critical · "+tot.HIGH+" high · "+tot.MEDIUM+" medium · "+tot.LOW+" low)\n\n";
+            sec += "| Critical | High | Medium | Low | Info |\n|----------|------|--------|-----|------|\n| **"+tot.CRITICAL+"** | **"+tot.HIGH+"** | **"+tot.MEDIUM+"** | **"+tot.LOW+"** | "+(tot.INFO||0)+" |\n\n";
+            sec += "_Generated: "+dateStr+" "+now.slice(11,16)+" UTC_\n\n---\n";
+
+            // -- Semgrep SAST --
+            const sastResults = r(semSast) || [];
+            const sastFiles = new Set(sastResults.map(x=>x.path).filter(Boolean));
+            sec += "\n#### Semgrep SAST — "+sastResults.length+" findings\n\n";
+            if (sastFiles.size > 0) {
+              sec += "<details><summary>Files scanned ("+sastFiles.size+")</summary>\n\n```\n";
+              sec += Array.from(sastFiles).sort().join("\n");
+              sec += "\n```\n\n</details>\n\n";
             }
-            fs.writeFileSync(dir+"/latest-security.md", sec);
+            if (sastResults.length > 0) {
+              sec += "| Severity | Rule | File | Line | Description |\n|----------|------|------|------|-------------|";
+              sastResults.forEach(x=>{
+                const sevMap = {ERROR:"🟠 HIGH",WARNING:"🟡 MEDIUM",INFO:"🔵 LOW"};
+                const sev = sevMap[x.extra?.severity]||"🔵 LOW";
+                const rule = x.check_id||"—";
+                const ruleParts = rule.split(".");
+                const shortRule = ruleParts[ruleParts.length-1];
+                const refUrl = x.extra?.metadata?.references?.[0]||"";
+                const ruleLink = refUrl?"[`"+shortRule+`"](`+refUrl+")":"`"+shortRule+"`";
+                const desc = (x.extra?.message||"").slice(0,150);
+                sec += h(sev+" | "+ruleLink+" | `"+(x.path||"")+"` | "+x.start?.line+" | "+desc);                
+              });
+            } else { sec += "_No findings._\n"; }
+            // Finding details for SAST
+            if (sastResults.length > 0) {
+              sec += "\n\n<details><summary>Finding details</summary>\n";
+              sastResults.forEach((x,i)=>{  
+                if (i>0) sec += "\n---\n";
+                const sevMap = {ERROR:"🟠 HIGH",WARNING:"🟡 MEDIUM",INFO:"🔵 LOW"};
+                const sev = sevMap[x.extra?.severity]||"🔵 LOW";
+                sec += "\n**"+sev+" `"+x.check_id+"`**\n\n";
+                sec += "📄 `"+(x.path||"")+"`  line "+(x.start?.line||"")+"\n\n";
+                sec += "> "+((x.extra?.message||"").replace(/\n/g," ")).slice(0,300)+"\n\n";
+                const cwes = Array.isArray(x.extra?.metadata?.cwe) ? x.extra.metadata.cwe : (typeof x.extra?.metadata?.cwe === "string" ? [x.extra.metadata.cwe] : []);
+                if (cwes.length>0) sec += "  **CWE**: ["+cwes.map(c=>"[`"+c+"`](https://cwe.mitre.org/data/definitions/"+c.replace("CWE-","")+".html)").join(", ")+"]\n\n";
+                const owasp = (x.extra?.metadata?.owasp||[]);
+                if (owasp.length>0) sec += "  **OWASP**: "+owasp.map(o=>"`"+o+"`").join(", ")+"\n\n";
+                if (x.lines) {
+                  sec += "```\n"+x.lines+"\n```\n\n";
+                }
+                const refs = (x.extra?.metadata?.references||[]).slice(0,3);
+                if (refs.length>0) sec += "**References**: "+refs.map(r=>"[link]("+r+")").join(" · ")+"\n";
+              });
+              sec += "\n</details>\n";
+            }
+
+            // -- Semgrep SCA --
+            const scaResults = r(semSca) || [];
+            const scaFiles = new Set(scaResults.map(x=>x.path).filter(Boolean));
+            sec += "\n#### Semgrep SCA — "+scaResults.length+" findings\n\n";
+            if (scaFiles.size > 0) {
+              sec += "<details><summary>Files scanned ("+scaFiles.size+")</summary>\n\n```\n";
+              sec += Array.from(scaFiles).sort().join("\n");
+              sec += "\n```\n\n</details>\n\n";
+            }
+            if (scaResults.length > 0) {
+              sec += "| Severity | Rule | Package | Version | Description |\n|----------|------|---------|---------|-------------|";
+              scaResults.forEach(x=>{
+                const sevMap = {ERROR:"🟠 HIGH",WARNING:"🟡 MEDIUM",INFO:"🔵 LOW"};
+                const sev = sevMap[x.extra?.severity]||"🔵 LOW";
+                const rule = (x.check_id||"").split(".").pop()||"—";
+                const desc = (x.extra?.message||"").slice(0,150);
+                sec += h(sev+" | `"+rule+"` | — | — | "+desc);
+              });
+            } else { sec += "_No findings._\n"; }
+
+            // -- Grype --
+            sec += "\n#### Grype — "+gm.length+" findings\n\n";
+            if (gm.length > 0) {
+              sec += "| Severity | CVE | Package | Installed | Fixed In | Type |\n|----------|-----|---------|-----------|----------|------|";
+              gm.forEach(m=>{
+                const v = m.vulnerability||{};
+                const a = m.artifact||{};
+                let sev = (v.severity||"unknown").toUpperCase();
+                const sevIcon = {CRITICAL:"🔴",HIGH:"🟠",MEDIUM:"🟡",LOW:"🔵",NEGLIGIBLE:"⚪",UNKNOWN:"⚪",MODERATE:"🟡"}[sev]||"⚪";
+                const sevLabel = sevIcon+" "+(sev==="MODERATE"?"MEDIUM":sev);
+                const cveId = v.id||"—";
+                const cveUrl = v.urls?.[0]||"https://nvd.nist.gov/vuln/detail/"+(v.id||"").replace(/_/g,"/");
+                const cveLink = "["+cveId+"](https://nvd.nist.gov/vuln/detail/"+cveId.replace(/_/g,"/")+")";
+                const fixedIn = (v.fix?.versions||[]).join(", ")||"—";
+                sec += h(sevLabel+" | "+cveLink+(v.url?" [link]("+v.url+")":"")+" | `"+(a.name||"")+"` | "+(a.version||"")+" | "+fixedIn+" | "+(a.type||"")+" |");
+              });
+              // Grype finding details
+              sec += "\n\n<details><summary>Vulnerability details</summary>\n";
+              gm.forEach((m,i)=>{  
+                if (i>0) sec += "\n---\n";
+                const v = m.vulnerability||{};
+                const a = m.artifact||{};
+                let sev = (v.severity||"unknown").toUpperCase();
+                const sevIcon = {CRITICAL:"🔴",HIGH:"🟠",MEDIUM:"🟡",LOW:"🔵",NEGLIGIBLE:"⚪",UNKNOWN:"⚪",MODERATE:"🟡"}[sev]||"⚪";
+                const sevLabel = sevIcon+" "+(sev==="MODERATE"?"MEDIUM":sev);
+                const cveId = v.id||"—";
+                sec += "\n**"+sevLabel+" ["+cveId+"](https://nvd.nist.gov/vuln/detail/"+cveId.replace(/_/g,"/")+")** — `"+(a.name||"")+"` "+(a.version||"")+"\n\n";
+                if (v.description) sec += "> "+v.description.slice(0,300)+"\n\n";
+                const fixVer = (v.fix?.versions||[]).join(", ");
+                if (fixVer) sec += "✅ **Fix available**: upgrade to `"+fixVer+"`\n\n";
+                else sec += "❌ **No fix available**\n\n";
+                const refs = (v.related_vulnerabilities||[]).concat(v.urls||[]).slice(0,3);
+                if (refs.length>0) sec += "**References**: "+refs.map(r=>"[link](https://nvd.nist.gov/vuln/detail/"+r.replace(/_/g,"/")+")").join(" · ")+"\n";
+              });
+              sec += "\n</details>\n";
+            } else { sec += "_No findings._\n"; }
+
+            // -- Gitleaks --
+            const glArray = Array.isArray(gitleaks)?gitleaks:[];
+            sec += "\n#### Gitleaks — "+glArray.length+" finding"+(glArray.length!==1?"s":"")+"\n\n";
+            if (glArray.length > 0) {
+              sec += "| Rule | File | Line | Commit | Description |\n|------|------|------|--------|-------------|";
+              glArray.forEach(g=>{
+                const sev = "🟠 HIGH";
+                const desc = g.Rule||g.Secret||"—";
+                sec += h(sev+" | `"+(g.File||"")+"` | "+(g.StartLine||"")+" | `"+((g.Commit||"").slice(0,8)||"")+"` | "+desc);
+              });
+              // Gitleaks finding details
+              sec += "\n\n<details><summary>Finding details</summary>\n";
+              glArray.forEach((g,i)=>{
+                if (i>0) sec += "\n---\n";
+                sec += "\n**🟠 HIGH `"+(g.Rule||g.Secret||"unknown")+"`** — "+(g.Rule||"").replace(/[-_]/g," ")+"\n\n";
+                sec += "📄 `"+(g.File||"")+"`  line "+(g.StartLine||"")+"\n\n";
+                if (g.Line) sec += "```\n"+g.Line+"\n```\n\n";
+                sec += "🔖 Commit `"+((g.Commit||"").slice(0,8)||"unknown")+"` by "+(g.Author||"")+" on "+(g.Date||"")+"\n";
+              });
+              sec += "\n</details>\n";
+            } else { sec += "_No findings._\n"; }
+
+            fs.writeFileSync(runDir+"/security.md", sec);
+            fs.writeFileSync(base+"/latest-security.md", sec);
             // SBOM report
             let sb = "# SBOM Report — "+repo+"\n\n";
             sb += "| Field | Value |\n|-------|-------|";
-            sb += "\n| Repository | "+repo+" |";
+            sb += "\n| Repository | "+repoFullName+" |";
             sb += "\n| Branch | "+branch+" |";
             sb += "\n| Commit | `"+commit+"` |";
             sb += "\n| Generated | "+now+" |";
@@ -466,8 +591,9 @@ jobs:
               const flag=vulnKeys.has(key)?"⚠️":"✅";
               sb += h((c.name||"-")+" | "+(c.version||"-")+" | "+(c.type||"-")+" | "+flag+" |");
             });
-            fs.writeFileSync(dir+"/latest-sbom.md", sb);
-            console.log("Reports generated: "+dir+"/latest-security.md, "+dir+"/latest-sbom.md");
+            fs.writeFileSync(runDir+"/sbom.md", sb);
+            fs.writeFileSync(base+"/latest-sbom.md", sb);
+            console.log("Reports generated: "+runDir+"/security.md, "+runDir+"/sbom.md → "+base+"/latest-*");
           ' -- central-repo
 
       - name: Commit findings and reports to hub
