@@ -285,6 +285,99 @@ jobs:
           token: ${{ secrets.SECURITY_SCAN_TOKEN }}
           path: central-repo
 
+      - name: Generate consolidated SBOM report
+        run: |
+          node --input-type=module -e '
+            import fs from "fs";
+
+            const sbom = JSON.parse(fs.readFileSync("artifacts/sca/sbom.cyclonedx.json", "utf8"));
+            const grype = JSON.parse(fs.readFileSync("artifacts/sca/grype-results.json", "utf8"));
+
+            // Build a lookup: key = "name@version" → [{cve, severity, fixedIn}]
+            const vulnMap = {};
+            for (const m of (grype.matches || [])) {
+              const art = m.artifact || {};
+              const vuln = m.vulnerability || {};
+              const key = `${art.name || "unknown"}@${art.version || "unknown"}`;
+              let sev = (vuln.severity || "unknown").toUpperCase();
+              if (["NEGLIGIBLE","UNKNOWN"].includes(sev)) sev = "INFO";
+              if (!vulnMap[key]) vulnMap[key] = [];
+              vulnMap[key].push({
+                cve: vuln.id || "—",
+                severity: sev,
+                fixedIn: (vuln.fix?.versions || []).join(", ") || "no fix available"
+              });
+            }
+
+            // Enrich every SBOM component with vulnerability status
+            const components = (sbom.components || []).map(c => {
+              const key = `${c.name || "unknown"}@${c.version || "unknown"}`;
+              const vulns = vulnMap[key] || [];
+              const hasVuln = vulns.length > 0;
+              const maxSev = vulns.length > 0
+                ? vulns.map(v => v.severity).reduce((a, b) => {
+                    const order = {CRITICAL:5, HIGH:4, MEDIUM:3, LOW:2, INFO:1};
+                    return (order[a]||0) >= (order[b]||0) ? a : b;
+                  })
+                : "none";
+              return {
+                type: c.type || "unknown",
+                name: c.name || "unknown",
+                version: c.version || "unknown",
+                purl: c.purl || null,
+                licenses: (c.licenses || []).map(l =>
+                  l.license?.id || l.license?.name || "unknown"
+                ),
+                vulnerable: hasVuln,
+                maxSeverity: maxSev,
+                vulnerabilityCount: vulns.length,
+                vulnerabilities: vulns.sort((a, b) => {
+                  const order = {CRITICAL:5, HIGH:4, MEDIUM:3, LOW:2, INFO:1};
+                  return (order[b.severity]||0) - (order[a.severity]||0);
+                })
+              };
+            });
+
+            // Sort: vulnerable first, then by severity, then alphabetically
+            const sevOrder = {CRITICAL:5, HIGH:4, MEDIUM:3, LOW:2, INFO:1, none:0};
+            components.sort((a, b) => {
+              if (a.vulnerable && !b.vulnerable) return -1;
+              if (!a.vulnerable && b.vulnerable) return 1;
+              const sa = sevOrder[a.maxSeverity] || 0;
+              const sb = sevOrder[b.maxSeverity] || 0;
+              if (sb !== sa) return sb - sa;
+              return (a.name || "").localeCompare(b.name || "");
+            });
+
+            const summary = {
+              totalComponents: components.length,
+              vulnerableComponents: components.filter(c => c.vulnerable).length,
+              cleanComponents: components.filter(c => !c.vulnerable).length,
+              bySeverity: {
+                critical: components.filter(c => c.maxSeverity === "CRITICAL").length,
+                high:     components.filter(c => c.maxSeverity === "HIGH").length,
+                medium:   components.filter(c => c.maxSeverity === "MEDIUM").length,
+                low:      components.filter(c => c.maxSeverity === "LOW").length,
+                info:     components.filter(c => c.maxSeverity === "INFO").length,
+              },
+              byType: components.reduce((acc, c) => {
+                acc[c.type] = (acc[c.type] || 0) + 1;
+                return acc;
+              }, {})
+            };
+
+            const report = {
+              generated: new Date().toISOString(),
+              repository: "${{ github.repository }}",
+              commit: "${{ github.sha }}",
+              summary,
+              components
+            };
+
+            fs.writeFileSync("sbom-report.json", JSON.stringify(report, null, 2));
+            console.log(`SBOM report generated: ${components.length} components, ${summary.vulnerableComponents} vulnerable`);
+          '
+
       - name: Copy findings into hub structure
         run: |
           REPO="${{ github.event.repository.name }}"
@@ -299,6 +392,7 @@ jobs:
           cp artifacts/sca/grype-results.json           "$DEST/" 2>/dev/null || echo '{"matches":[]}' > "$DEST/grype-results.json"
           cp artifacts/sca/sbom.cyclonedx.json          "$DEST/" 2>/dev/null || echo '{"bomFormat":"CycloneDX","components":[]}' > "$DEST/sbom.cyclonedx.json"
           cp artifacts/gitleaks/gitleaks-report.json    "$DEST/" 2>/dev/null || echo '[]' > "$DEST/gitleaks-report.json"
+          cp sbom-report.json                           "$DEST/" 2>/dev/null || echo '{"components":[]}' > "$DEST/sbom-report.json"
           cp artifacts/metadata.json                    "$DEST/"
 
       - name: Commit and push to hub
@@ -430,6 +524,11 @@ jobs:
             const grype     = parseGrype('artifacts/sca/grype-results.json');
             const gitleaks  = parseGitleaks('artifacts/gitleaks/gitleaks-report.json');
 
+            // ── Full Grype matches for SBOM section ──
+            const grypeMatches = fs.existsSync('artifacts/sca/grype-results.json')
+              ? JSON.parse(fs.readFileSync('artifacts/sca/grype-results.json', 'utf8')).matches || []
+              : [];
+
             const total = {
               CRITICAL: sast.counts.CRITICAL + sca.counts.CRITICAL + grype.counts.CRITICAL + gitleaks.counts.CRITICAL,
               HIGH:     sast.counts.HIGH      + sca.counts.HIGH      + grype.counts.HIGH      + gitleaks.counts.HIGH,
@@ -489,6 +588,74 @@ jobs:
             addGrypeDetail(grype.findings);
             addGitleaksDetail(gitleaks.findings);
 
+            // ── SBOM dependency summary ──
+            let sbomSummary = '';
+            const sbomPath = 'artifacts/sca/sbom.cyclonedx.json';
+            if (fs.existsSync(sbomPath)) {
+              const sbom = JSON.parse(fs.readFileSync(sbomPath, 'utf8'));
+              const components = sbom.components || [];
+              const totalCount = components.length;
+
+              // Build a set of vulnerable component keys from grype
+              const vulnKeys = new Set();
+              for (const m of grypeMatches || []) {
+                const art = m.artifact || {};
+                vulnKeys.add(`${art.name}@${art.version}`);
+              }
+
+              // Get all grype matches for vuln details
+              const vulnByComponent = {};
+              for (const m of grypeMatches || []) {
+                const art = m.artifact || {};
+                const vuln = m.vulnerability || {};
+                const key = `${art.name}@${art.version}`;
+                if (!vulnByComponent[key]) vulnByComponent[key] = [];
+                vulnByComponent[key].push({
+                  id: vuln.id || '—',
+                  severity: vuln.severity || 'unknown'
+                });
+              }
+
+              const vulnComponentCount = Object.keys(vulnByComponent).length;
+              const cleanCount = totalCount - vulnComponentCount;
+
+              // List of all vulnerable packages with their CVEs
+              const vulnList = Object.entries(vulnByComponent)
+                .sort((a, b) => {
+                  const maxSev = (entries) => {
+                    const order = { CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, INFO: 1 };
+                    return Math.max(...entries.map(e => order[e.severity?.toUpperCase()] || 0));
+                  };
+                  return maxSev(b[1]) - maxSev(a[1]);
+                })
+                .map(([pkg, vulns]) => {
+                  const ids = vulns.map(v => v.id).join(', ');
+                  return `| \`${pkg}\` | ${vulns.map(v => v.id).join(', ')} |`;
+                })
+                .join('\n');
+
+              // Full component list (abbreviated for PR comment)
+              const byType = {};
+              for (const c of components) {
+                byType[c.type || 'unknown'] = (byType[c.type || 'unknown'] || 0) + 1;
+              }
+              const typeSummary = Object.entries(byType)
+                .sort((a, b) => b[1] - a[1])
+                .map(([t, c]) => `${t}: ${c}`)
+                .join(', ');
+
+              sbomSummary = [
+                '### 📦 SBOM — Dependencies',
+                '',
+                `**${totalCount} components total** — ${vulnComponentCount} vulnerable, ${cleanCount} clean`,
+                '',
+                `By type: ${typeSummary}`, '',
+                ...(vulnList
+                  ? ['', '| Package | CVEs |', '|---------|------|', vulnList]
+                  : ['\n_No vulnerable dependencies detected_']),
+              ].join('\n');
+            }
+
             const body = [
               `## ${icon} Security Scan Results`,
               '',
@@ -500,9 +667,10 @@ jobs:
               row('Gitleaks',     gitleaks.counts),
               `| **Total** | **${total.CRITICAL}** | **${total.HIGH}** | **${total.MEDIUM}** | **${total.LOW}** |`,
               '',
-              `[View full scan run](${runUrl})`,
+              '[View full scan run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})',
               '',
-              '> Findings are pushed to the central hub only when this PR merges.',
+              '> Findings and SBOM are pushed to the central hub only when this PR merges.',
+              ...(sbomSummary ? ['', sbomSummary] : []),
               ...(detailLines.length ? ['', '### High & Critical Findings', '', ...detailLines] : []),
             ].join('\n');
 
