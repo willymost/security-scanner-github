@@ -4,13 +4,13 @@
 #
 # Prerequisites:
 #    - SECURITY_SCAN_TOKEN secret: fine-grained PAT with Contents:Write on
-#     the central security-scans hub (see docs/central-repo-setup.md)
+#      the central security-scans hub (see docs/central-repo-setup.md)
 #
 # What this does:
-#    - On push/schedule/dispatch: runs Semgrep SAST, Semgrep SCA, Syft + Grype,
-#     Gitleaks secret scanning, and pushes findings to the central hub
-#    - On pull_request (same-repo branches): runs all scans and posts a severity
-#     summary comment on the PR (no central push)
+#    - On push to tracked branches / schedule / dispatch: runs Semgrep SAST,
+#      Semgrep SCA, Syft + Grype, Gitleaks, and pushes findings to the central hub
+#    - On any pull_request: runs all scans and posts a severity summary comment
+#      on the PR (no central push)
 
 name: Security Scan
 
@@ -19,10 +19,11 @@ on:
     branches:
       - main
       - master
-  pull_request:
-    branches:
-      - main
-      - master
+      - prod
+      - production
+      - release
+      - staging
+  pull_request: ~
   schedule:
     # Weekly Monday 02:00 UTC
     - cron: "0 2 * * 1"
@@ -70,10 +71,10 @@ jobs:
 
           # To exclude specific files, add a .semgrepignore file to the repo root.
           semgrep scan \
-             --config auto \
-             --json-output=semgrep-sast.json \
-             . 2>&1 \
-           || echo "::warning::Semgrep SAST exited with an error — check output above"
+            --config auto \
+            --json-output=semgrep-sast.json \
+            . 2>&1 \
+            || echo "::warning::Semgrep SAST exited with an error — check output above"
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
@@ -89,9 +90,9 @@ jobs:
           path: semgrep-sast.json
           retention-days: 7
 
-   # -------------------------------------------------------------------
-   # Semgrep SCA — dependency / supply-chain analysis
-   # -------------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Semgrep SCA — dependency / supply-chain analysis
+  # -------------------------------------------------------------------
   semgrep-sca:
     name: Semgrep SCA
     runs-on: ubuntu-latest
@@ -122,10 +123,10 @@ jobs:
           echo '{"results":[],"errors":[],"paths":{"scanned":[]}}' > semgrep-sca.json
 
           semgrep scan \
-             --config p/supply-chain \
-             --json-output=semgrep-sca.json \
-             . \
-           || true
+            --config p/supply-chain \
+            --json-output=semgrep-sca.json \
+            . \
+            || true
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
@@ -141,9 +142,9 @@ jobs:
           path: semgrep-sca.json
           retention-days: 7
 
-   # -------------------------------------------------------------------
-   # Syft + Grype — SBOM generation and vulnerability scanning
-   # -------------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Syft + Grype — SBOM generation and vulnerability scanning
+  # -------------------------------------------------------------------
   sca:
     name: Syft + Grype
     runs-on: ubuntu-latest
@@ -161,9 +162,9 @@ jobs:
       - name: Generate SBOM
         run: |
           syft "${{ github.workspace }}" \
-             -o cyclonedx-json=sbom.cyclonedx.json \
-             --exclude '**/.github/workflows/security-scan.yml' \
-           || true
+            -o cyclonedx-json=sbom.cyclonedx.json \
+            --exclude '**/.github/workflows/security-scan.yml' \
+            || true
 
       - name: Report SBOM component count
         if: always()
@@ -176,8 +177,8 @@ jobs:
       - name: Run Grype vulnerability scan
         run: |
           grype sbom:sbom.cyclonedx.json \
-             -o json=grype-results.json \
-           || true
+            -o json=grype-results.json \
+            || true
 
       - name: Report Grype finding count
         if: always()
@@ -193,9 +194,9 @@ jobs:
             grype-results.json
           retention-days: 7
 
-   # -------------------------------------------------------------------
-   # Gitleaks — secret / credential scanning
-   # -------------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Gitleaks — secret / credential scanning
+  # -------------------------------------------------------------------
   gitleaks:
     name: Gitleaks
     runs-on: ubuntu-latest
@@ -218,12 +219,12 @@ jobs:
       - name: Run Gitleaks
         run: |
           gitleaks detect \
-             --source "${{ github.workspace }}" \
-             --report-format json \
-             --report-path gitleaks-report.json \
-             --redact \
-             --no-banner \
-             --exit-code 0
+            --source "${{ github.workspace }}" \
+            --report-format json \
+            --report-path gitleaks-report.json \
+            --redact \
+            --no-banner \
+            --exit-code 0
 
       - name: Report secret finding count
         if: always()
@@ -237,9 +238,9 @@ jobs:
           path: gitleaks-report.json
           retention-days: 7
 
-   # -------------------------------------------------------------------
-   # Push findings to central hub — runs only on push/schedule/dispatch
-   # -------------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # Push findings to central hub — runs only on push/schedule/dispatch
+  # -------------------------------------------------------------------
   push-to-central:
     name: Push findings to security-scans
     runs-on: ubuntu-latest
@@ -265,16 +266,16 @@ jobs:
       - name: Write metadata.json
         run: |
           cat > artifacts/metadata.json <<EOF
-           {
-             "repository": "${{ github.repository }}",
-             "repo_name": "${{ github.event.repository.name }}",
-             "branch": "${{ github.ref_name }}",
-             "commit_sha": "${{ github.sha }}",
-             "run_id": "${{ github.run_id }}",
-             "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-             "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-             "event": "${{ github.event_name }}"
-           }
+          {
+            "repository": "${{ github.repository }}",
+            "repo_name": "${{ github.event.repository.name }}",
+            "branch": "${{ github.ref_name }}",
+            "commit_sha": "${{ github.sha }}",
+            "run_id": "${{ github.run_id }}",
+            "run_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "event": "${{ github.event_name }}"
+          }
           EOF
 
       - name: Checkout security-scans hub
@@ -313,9 +314,9 @@ jobs:
             git push origin "${{ env.CENTRAL_BRANCH }}"
           fi
 
-   # -------------------------------------------------------------------
-   # PR annotation — posts severity summary on pull requests
-   # -------------------------------------------------------------------
+  # -------------------------------------------------------------------
+  # PR annotation — posts severity summary on pull requests
+  # -------------------------------------------------------------------
   pr-annotation:
     name: Annotate PR
     runs-on: ubuntu-latest
@@ -355,7 +356,7 @@ jobs:
               if (!fs.existsSync(filePath)) return { counts, findings };
               try {
                 const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-                const semap = { ERROR: 'HIGH', WARNING: 'MEDIUM', INFO: 'LOW', WARNING: 'MEDIUM' };
+                const semap = { ERROR: 'HIGH', WARNING: 'MEDIUM', INFO: 'LOW' };
                 for (const r of (data.results || [])) {
                   const extra = r.extra || {};
                   const sev = semap[extra.severity] || 'INFO';
@@ -368,12 +369,12 @@ jobs:
                       file: trunc(r.path || '—', 60),
                       line: r.start?.line || '—',
                       msg:  trunc((extra.message || '').replace(/\|/g, '\\|').replace(/\n/g, ' '), 120),
-                     });
-                   }
-                 }
-               } catch(e) {}
+                    });
+                  }
+                }
+              } catch(e) {}
               return { counts, findings };
-             }
+            }
 
             function parseGrype(filePath) {
               const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
@@ -396,12 +397,12 @@ jobs:
                       pkg:     art.name || '—',
                       ver:     art.version || '—',
                       fixedIn: (fix.versions || []).join(', ') || 'no fix',
-                     });
-                   }
-                 }
-               } catch(e) {}
+                    });
+                  }
+                }
+              } catch(e) {}
               return { counts, findings };
-             }
+            }
 
             function parseGitleaks(filePath) {
               const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
@@ -418,23 +419,23 @@ jobs:
                     line:   f.StartLine || '—',
                     commit: (f.Commit || '').slice(0, 8) || '—',
                     desc:    (f.Description || '').replace(/\|/g, '\\|'),
-                   });
-                 }
-               } catch(e) {}
+                  });
+                }
+              } catch(e) {}
               return { counts, findings };
-             }
+            }
 
             const sast      = parseSemgrepJson('artifacts/semgrep-sast/semgrep-sast.json');
             const sca       = parseSemgrepJson('artifacts/semgrep-sca/semgrep-sca.json');
             const grype     = parseGrype('artifacts/sca/grype-results.json');
-            const gitleaks = parseGitleaks('artifacts/gitleaks/gitleaks-report.json');
+            const gitleaks  = parseGitleaks('artifacts/gitleaks/gitleaks-report.json');
 
             const total = {
               CRITICAL: sast.counts.CRITICAL + sca.counts.CRITICAL + grype.counts.CRITICAL + gitleaks.counts.CRITICAL,
               HIGH:     sast.counts.HIGH      + sca.counts.HIGH      + grype.counts.HIGH      + gitleaks.counts.HIGH,
               MEDIUM:   sast.counts.MEDIUM    + sca.counts.MEDIUM    + grype.counts.MEDIUM    + gitleaks.counts.MEDIUM,
               LOW:      sast.counts.LOW       + sca.counts.LOW       + grype.counts.LOW       + gitleaks.counts.LOW,
-             };
+            };
 
             const icon = total.CRITICAL > 0 ? '🔴' :
                          total.HIGH      > 0 ? '🟠' :
@@ -469,7 +470,7 @@ jobs:
               if (findings.length > MAX_PER_TOOL)
                 detailLines.push(`_…and ${findings.length - MAX_PER_TOOL} more — [view full run](${runUrl})_`);
               detailLines.push('');
-             }
+            }
 
             function addGitleaksDetail(findings) {
               if (!findings.length) return;
@@ -481,7 +482,7 @@ jobs:
               if (findings.length > MAX_PER_TOOL)
                 detailLines.push(`_…and ${findings.length - MAX_PER_TOOL} more — [view full run](${runUrl})_`);
               detailLines.push('');
-             }
+            }
 
             addSemgrepDetail('Semgrep SAST', sast.findings);
             addSemgrepDetail('Semgrep SCA',  sca.findings);
@@ -489,21 +490,21 @@ jobs:
             addGitleaksDetail(gitleaks.findings);
 
             const body = [
-               `## ${icon} Security Scan Results`,
-               '',
-               '| Tool | Critical | High | Medium | Low |',
-               '|------|----------|------|--------|-----|',
+              `## ${icon} Security Scan Results`,
+              '',
+              '| Tool | Critical | High | Medium | Low |',
+              '|------|----------|------|--------|-----|',
               row('Semgrep SAST', sast.counts),
               row('Semgrep SCA',  sca.counts),
               row('Grype',        grype.counts),
               row('Gitleaks',     gitleaks.counts),
-               `| **Total** | **${total.CRITICAL}** | **${total.HIGH}** | **${total.MEDIUM}** | **${total.LOW}** |`,
-               '',
-               `[View full scan run](${runUrl})`,
-               '',
-               '> Findings are pushed to the central hub only when this PR merges.',
-               ...(detailLines.length ? ['', '### High & Critical Findings', '', ...detailLines] : []),
-             ].join('\n');
+              `| **Total** | **${total.CRITICAL}** | **${total.HIGH}** | **${total.MEDIUM}** | **${total.LOW}** |`,
+              '',
+              `[View full scan run](${runUrl})`,
+              '',
+              '> Findings are pushed to the central hub only when this PR merges.',
+              ...(detailLines.length ? ['', '### High & Critical Findings', '', ...detailLines] : []),
+            ].join('\n');
 
             github.rest.issues.createComment({
               owner: context.repo.owner,

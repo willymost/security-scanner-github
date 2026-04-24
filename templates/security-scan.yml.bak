@@ -8,7 +8,7 @@
 #
 # What this does:
 #    - On push/schedule/dispatch: runs Semgrep SAST, Semgrep SCA, Syft + Grype,
-#     Gitleaks secret scanning, and pushes findings (SARIF + JSON) to the central hub
+#     Gitleaks secret scanning, and pushes findings to the central hub
 #    - On pull_request (same-repo branches): runs all scans and posts a severity
 #     summary comment on the PR (no central push)
 
@@ -59,27 +59,23 @@ jobs:
 
       - name: Run Semgrep SAST
         run: |
-          SEMGREP_TOKEN=""
-          if [ -n "${{ secrets.SEMGREP_APP_TOKEN }}" ]; then
-            SEMGREP_TOKEN="${{ secrets.SEMGREP_APP_TOKEN }}"
+          if [ -n "${SEMGREP_APP_TOKEN:-}" ]; then
             echo "✅ Using configured SEMGREP_APP_TOKEN"
           else
-            echo "⚠️  No SEMGREP_APP_TOKEN configured, running with default Semgrep behavior"
+            echo "⚠️  No SEMGREP_APP_TOKEN configured, running with OSS rules only"
           fi
 
-          # Pre-create output files so artifact upload never fails even if Semgrep errors out.
-          echo '{"runs":[]}' > semgrep-sast.sarif
+          # Pre-create output file so artifact upload never fails even if Semgrep errors out.
           echo '{"results":[],"errors":[],"paths":{"scanned":[]}}' > semgrep-sast.json
 
           # To exclude specific files, add a .semgrepignore file to the repo root.
           semgrep scan \
              --config auto \
-             --sarif-output=semgrep-sast.sarif \
              --json-output=semgrep-sast.json \
              . 2>&1 \
            || echo "::warning::Semgrep SAST exited with an error — check output above"
         env:
-          SEMGREP_TOKEN: $SEMGREP_TOKEN
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
       - name: Report SAST finding count
         if: always()
@@ -90,9 +86,7 @@ jobs:
         if: always()
         with:
           name: semgrep-sast
-          path: |
-            semgrep-sast.sarif
-            semgrep-sast.json
+          path: semgrep-sast.json
           retention-days: 7
 
    # -------------------------------------------------------------------
@@ -118,14 +112,22 @@ jobs:
 
       - name: Run Semgrep SCA
         run: |
+          if [ -n "${SEMGREP_APP_TOKEN:-}" ]; then
+            echo "✅ Using configured SEMGREP_APP_TOKEN"
+          else
+            echo "⚠️  No SEMGREP_APP_TOKEN configured, running with OSS rules only"
+          fi
+
+          # Pre-create output file so artifact upload never fails even if Semgrep errors out.
+          echo '{"results":[],"errors":[],"paths":{"scanned":[]}}' > semgrep-sca.json
+
           semgrep scan \
              --config p/supply-chain \
-             --sarif-output=semgrep-sca.sarif \
              --json-output=semgrep-sca.json \
              . \
            || true
-        # env:
-        #   SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
       - name: Report SCA finding count
         if: always()
@@ -136,9 +138,7 @@ jobs:
         if: always()
         with:
           name: semgrep-sca
-          path: |
-            semgrep-sca.sarif
-            semgrep-sca.json
+          path: semgrep-sca.json
           retention-days: 7
 
    # -------------------------------------------------------------------
@@ -293,10 +293,8 @@ jobs:
 
           mkdir -p "$DEST"
 
-          cp artifacts/semgrep-sast/semgrep-sast.sarif "$DEST/" 2>/dev/null || echo '{"runs":[]}' > "$DEST/semgrep-sast.sarif"
-          cp artifacts/semgrep-sast/semgrep-sast.json   "$DEST/" 2>/dev/null || echo '{"results":[]}' > "$DEST/semgrep-sast.json"
-          cp artifacts/semgrep-sca/semgrep-sca.sarif    "$DESC/" 2>/dev/null || echo '{"runs":[]}' > "$DEST/semgrep-sca.sarif"
-          cp artifacts/semgrep-sca/semgrep-sca.json     "$DEST/" 2>/dev/null || echo '{"results":[]}' > "$DEST/semgrep-sca.json"
+          cp artifacts/semgrep-sast/semgrep-sast.json   "$DEST/" 2>/dev/null || echo '{"results":[],"errors":[],"paths":{"scanned":[]}}' > "$DEST/semgrep-sast.json"
+          cp artifacts/semgrep-sca/semgrep-sca.json     "$DEST/" 2>/dev/null || echo '{"results":[],"errors":[],"paths":{"scanned":[]}}' > "$DEST/semgrep-sca.json"
           cp artifacts/sca/grype-results.json           "$DEST/" 2>/dev/null || echo '{"matches":[]}' > "$DEST/grype-results.json"
           cp artifacts/sca/sbom.cyclonedx.json          "$DEST/" 2>/dev/null || echo '{"bomFormat":"CycloneDX","components":[]}' > "$DEST/sbom.cyclonedx.json"
           cp artifacts/gitleaks/gitleaks-report.json    "$DEST/" 2>/dev/null || echo '[]' > "$DEST/gitleaks-report.json"
@@ -351,41 +349,26 @@ jobs:
             function badge(s) { return `${SEV_ICON[s] || ''} ${s}`; }
             function trunc(s, n) { s = String(s); return s.length > n ? '…' + s.slice(-(n-1)) : s; }
 
-            function parseSarif(filePath) {
+            function parseSemgrepJson(filePath) {
               const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
               const findings = [];
               if (!fs.existsSync(filePath)) return { counts, findings };
               try {
                 const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-                for (const run of (data.runs || [])) {
-                  const rules = {};
-                  for (const r of (run.tool?.driver?.rules || [])) rules[r.id] = r;
-                  for (const result of (run.results || [])) {
-                    const props = result.properties || {};
-                    const ruleProps = (rules[result.ruleId] || {}).properties || {};
-                    const cvss = parseFloat(props['security-severity'] || ruleProps['security-severity'] || 'NaN');
-                    let sev;
-                    if (!isNaN(cvss)) {
-                      sev = cvss >= 9 ? 'CRITICAL' : cvss >= 7 ? 'HIGH' : cvss >= 4 ? 'MEDIUM' : 'LOW';
-                     } else {
-                      const map = { error: 'HIGH', warning: 'MEDIUM', note: 'INFO', none: 'INFO' };
-                      sev = map[(result.level || 'note').toLowerCase()] || 'INFO';
-                     }
-                    counts[sev]++;
-                    if (sev === 'CRITICAL' || sev === 'HIGH') {
-                      const rule = rules[result.ruleId] || {};
-                      const loc   = (result.locations || [{}])[0];
-                      const phys = loc.physicalLocation || {};
-                      const region = phys.region || {};
-                      const ruleId = result.ruleId || '';
-                      findings.push({
-                        sev,
-                        rule: trunc(ruleId.includes('.') ? ruleId.split('.').pop() : ruleId, 40),
-                        file: trunc(phys.artifactLocation?.uri || '—', 60),
-                        line: region.startLine || '—',
-                        msg:  trunc((result.message?.text || '').replace(/\|/g, '\\|').replace(/\n/g, ' '), 120),
-                       });
-                     }
+                const semap = { ERROR: 'HIGH', WARNING: 'MEDIUM', INFO: 'LOW', WARNING: 'MEDIUM' };
+                for (const r of (data.results || [])) {
+                  const extra = r.extra || {};
+                  const sev = semap[extra.severity] || 'INFO';
+                  counts[sev]++;
+                  if (sev === 'CRITICAL' || sev === 'HIGH') {
+                    const ruleId = r.check_id || '';
+                    findings.push({
+                      sev,
+                      rule: trunc(ruleId.includes('.') ? ruleId.split('.').pop() : ruleId, 40),
+                      file: trunc(r.path || '—', 60),
+                      line: r.start?.line || '—',
+                      msg:  trunc((extra.message || '').replace(/\|/g, '\\|').replace(/\n/g, ' '), 120),
+                     });
                    }
                  }
                } catch(e) {}
@@ -441,8 +424,8 @@ jobs:
               return { counts, findings };
              }
 
-            const sast      = parseSarif('artifacts/semgrep-sast/semgrep-sast.sarif');
-            const sca       = parseSarif('artifacts/semgrep-sca/semgrep-sca.sarif');
+            const sast      = parseSemgrepJson('artifacts/semgrep-sast/semgrep-sast.json');
+            const sca       = parseSemgrepJson('artifacts/semgrep-sca/semgrep-sca.json');
             const grype     = parseGrype('artifacts/sca/grype-results.json');
             const gitleaks = parseGitleaks('artifacts/gitleaks/gitleaks-report.json');
 
@@ -474,6 +457,7 @@ jobs:
               if (findings.length > MAX_PER_TOOL)
                 detailLines.push(`_…and ${findings.length - MAX_PER_TOOL} more — [view full run](${runUrl})_`);
               detailLines.push('');
+            }
 
             function addGrypeDetail(findings) {
               if (!findings.length) return;
@@ -521,9 +505,9 @@ jobs:
                ...(detailLines.length ? ['', '### High & Critical Findings', '', ...detailLines] : []),
              ].join('\n');
 
-            await github.rest.issues.createComment({
+            github.rest.issues.createComment({
               owner: context.repo.owner,
               repo:  context.repo.repo,
               issue_number: context.issue.number,
               body,
-             });
+            });
