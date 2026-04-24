@@ -396,7 +396,79 @@ jobs:
           cp artifacts/metadata.json                    "$DEST/"
 
       - name: Generate markdown reports
-        run: node scripts/generate-reports.js central-repo
+        run: |
+          node -e '
+            const fs = require("fs");
+            const out = process.argv[1];
+            const load = p => { try { return JSON.parse(fs.readFileSync(p,"utf8")); } catch(e) { return null; } };
+            const meta = load("artifacts/metadata.json") || {};
+            const repo = meta.repository || "unknown";
+            const commit = (meta.commit_sha || "").slice(0,8);
+            const branch = meta.branch || "";
+            const runUrl = meta.run_url || "";
+            const now = new Date().toISOString();
+            const semSast = load("artifacts/semgrep-sast/semgrep-sast.json");
+            const semSca  = load("artifacts/semgrep-sca/semgrep-sca.json");
+            const grype   = load("artifacts/sca/grype-results.json");
+            const gitleaks = load("artifacts/gitleaks/gitleaks-report.json");
+            const sbom    = load("artifacts/sca/sbom.cyclonedx.json");
+            const r = a => (a && a.results) || [];
+            const map = { ERROR:"HIGH", WARNING:"MEDIUM", INFO:"LOW" };
+            const cnt = arr => { const c={CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0,INFO:0}; (r(arr)||[]).forEach(x=>{const s=map[x.extra?.severity]||"INFO";c[s]++}); return c; };
+            const sc=cnt(semSast), sc2=cnt(semSca);
+            const gm = grype?.matches || [];
+            const gl = Array.isArray(gitleaks) ? gitleaks : [];
+            const gc = {CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0,INFO:0};
+            gm.forEach(m=>{let s=(m.vulnerability?.severity||"unknown").toUpperCase(); if(s==="NEGLIGIBLE"||s==="UNKNOWN")s="INFO"; if(gc[s]!==undefined)gc[s]++;else gc.INFO++;});
+            const lc = {CRITICAL:0,HIGH:gl.length,MEDIUM:0,LOW:0,INFO:0};
+            const tot={}; ["CRITICAL","HIGH","MEDIUM","LOW"].forEach(k=>{tot[k]=(sc[k]||0)+(sc2[k]||0)+(gc[k]||0)+(lc[k]||0);});
+            const h=r => "| "+r; const mkd = p=>fs.mkdirSync(p,{recursive:true});
+            const dir = out+"/reports/"+repo; mkd(dir);
+            // Security report
+            let sec = "# Security Report — "+repo+"\n\n";
+            sec += "| Field | Value |\n|-------|-------|";
+            sec += "\n| Repository | "+repo+" |";
+            sec += "\n| Branch | "+branch+" |";
+            sec += "\n| Commit | `"+commit+"` |";
+            sec += "\n| Generated | "+now+" |";
+            sec += "\n| Run | [Action run]("+runUrl+") |";
+            sec += "\n| Report Type | security |";
+            sec += "\n\n---\n\n";
+            const icons = {CRITICAL:"🔴",HIGH:"🟠",MEDIUM:"🟡",LOW:"🔵"};
+            if (Object.values(tot).some(v=>v>0)) {
+              const ic = tot.CRITICAL>0?icons.CRITICAL:tot.HIGH>0?icons.HIGH:tot.MEDIUM>0?icons.MEDIUM:"🟢";
+              sec += "## "+ic+" Security Scan Results\n\n";
+              sec += "| Tool | Critical | High | Medium | Low |\n|------|----------|------|--------|-----|";
+              sec += h("Semgrep SAST | "+(sc.CRITICAL||0)+" | "+(sc.HIGH||0)+" | "+(sc.MEDIUM||0)+" | "+(sc.LOW||0)+" |");
+              sec += h("Semgrep SCA  | "+(sc2.CRITICAL||0)+" | "+(sc2.HIGH||0)+" | "+(sc2.MEDIUM||0)+" | "+(sc2.LOW||0)+" |");
+              sec += h("Grype        | "+(gc.CRITICAL||0)+" | "+(gc.HIGH||0)+" | "+(gc.MEDIUM||0)+" | "+(gc.LOW||0)+" |");
+              sec += h("Gitleaks     | "+(lc.CRITICAL||0)+" | "+(lc.HIGH||0)+" | "+(lc.MEDIUM||0)+" | "+(lc.LOW||0)+" |");
+              sec += h("**Total**    | **"+tot.CRITICAL+"** | **"+tot.HIGH+"** | **"+tot.MEDIUM+"** | **"+tot.LOW+"** |");
+            } else {
+              sec += "## 🟢 Security Scan Results — No Findings\n\nNo vulnerabilities or secrets detected.";
+            }
+            fs.writeFileSync(dir+"/latest-security.md", sec);
+            // SBOM report
+            let sb = "# SBOM Report — "+repo+"\n\n";
+            sb += "| Field | Value |\n|-------|-------|";
+            sb += "\n| Repository | "+repo+" |";
+            sb += "\n| Branch | "+branch+" |";
+            sb += "\n| Commit | `"+commit+"` |";
+            sb += "\n| Generated | "+now+" |";
+            sb += "\n| Report Type | sbom |";
+            sb += "\n\n---\n\n";
+            const comps = sbom?.components || [];
+            sb += "**"+comps.length+" total components**\n\n";
+            const vulnKeys = new Set(gm.map(m=>((m.artifact?.name||"")+"@"+(m.artifact?.version||"")).toLowerCase()));
+            sb += "| Component | Version | Type | Status |\n|-----------|---------|------|--------|";
+            comps.forEach(c=>{
+              const key=(c.name+"@"+c.version).toLowerCase();
+              const flag=vulnKeys.has(key)?"⚠️":"✅";
+              sb += h((c.name||"-")+" | "+(c.version||"-")+" | "+(c.type||"-")+" | "+flag+" |");
+            });
+            fs.writeFileSync(dir+"/latest-sbom.md", sb);
+            console.log("Reports generated: "+dir+"/latest-security.md, "+dir+"/latest-sbom.md");
+          ' -- central-repo
 
       - name: Commit findings and reports to hub
         working-directory: central-repo
