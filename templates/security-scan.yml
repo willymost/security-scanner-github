@@ -384,30 +384,16 @@ jobs:
           DATE="$(date -u +%Y-%m-%d)"
           RUN_ID="${{ github.run_id }}"
           DEST="central-repo/findings/${REPO}/${DATE}/${RUN_ID}"
-          REPO_BASE="central-repo/findings/${REPO}"
 
           mkdir -p "$DEST"
 
-          # ── security report components ──
           cp artifacts/semgrep-sast/semgrep-sast.json   "$DEST/" 2>/dev/null || echo '{"results":[],"errors":[],"paths":{"scanned":[]}}' > "$DEST/semgrep-sast.json"
           cp artifacts/semgrep-sca/semgrep-sca.json     "$DEST/" 2>/dev/null || echo '{"results":[],"errors":[],"paths":{"scanned":[]}}' > "$DEST/semgrep-sca.json"
           cp artifacts/sca/grype-results.json           "$DEST/" 2>/dev/null || echo '{"matches":[]}' > "$DEST/grype-results.json"
-          cp artifacts/gitleaks/gitleaks-report.json    "$DEST/" 2>/dev/null || echo '[]' > "$DEST/gitleaks-report.json"
-          cp artifacts/metadata.json                    "$DEST/"
-
-          # ── sbom report components ──
           cp artifacts/sca/sbom.cyclonedx.json          "$DEST/" 2>/dev/null || echo '{"bomFormat":"CycloneDX","components":[]}' > "$DEST/sbom.cyclonedx.json"
+          cp artifacts/gitleaks/gitleaks-report.json    "$DEST/" 2>/dev/null || echo '[]' > "$DEST/gitleaks-report.json"
           cp sbom-report.json                           "$DEST/" 2>/dev/null || echo '{"components":[]}' > "$DEST/sbom-report.json"
-          cp sbom-report.json                           "$DEST/sbom-report.json" 2>/dev/null || true
-
-          # ── latest pointers ──
-          # Remove old latest symlinks (they may point to dates that no longer exist)
-          rm -f "$REPO_BASE/latest-security" "$REPO_BASE/latest-sbom"
-
-          # Create symlinks to current scan
-          cd "$REPO_BASE"
-          ln -sf "${DATE}/${RUN_ID}" latest-security
-          ln -sf "${DATE}/${RUN_ID}" latest-sbom
+          cp artifacts/metadata.json                    "$DEST/"
 
       - name: Commit and push to hub
         working-directory: central-repo
