@@ -395,12 +395,15 @@ jobs:
           cp sbom-report.json                           "$DEST/" 2>/dev/null || echo '{"components":[]}' > "$DEST/sbom-report.json"
           cp artifacts/metadata.json                    "$DEST/"
 
-      - name: Commit and push to hub
+      - name: Generate markdown reports
+        run: node scripts/generate-reports.js central-repo
+
+      - name: Commit findings and reports to hub
         working-directory: central-repo
         run: |
           git config user.name   "security-scan-bot"
           git config user.email "security-scan-bot@users.noreply.github.com"
-          git add findings/
+          git add findings/ reports/
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
