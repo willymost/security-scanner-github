@@ -8,23 +8,23 @@ not the findings store.
 
 ```
 ┌── <your-username>/security-scanner-v1 (this repo) ─────────────┐
-│  templates/security-scan.yml   ← copy to each source repo       │
-│  docs/central-repo-setup.md    ← one-time hub setup guide       │
-│  docs/add-scanning-to-repo.md  ← per-repo onboarding guide      │
+│  templates/security-scan.yml    ← copy to each source repo        │
+│  docs/central-repo-setup.md     ← one-time hub setup guide        │
+│  docs/add-scanning-to-repo.md   ← per-repo onboarding guide       │
 └─────────────────────────────────────────────────────────────────┘
-                    ↑ developers reference this repo
+                     ↑ developers reference this repo
 
-Source Repo A  ──┐
-Source Repo B  ──┼──► (PAT push on merge) ──► <your-username>/security-scans
-Source Repo C  ──┘                                ├── findings/
-                                                  │   └── {repo}/
-                                                  │       └── {YYYY-MM-DD}/
-                                                  │           └── {run-id}/
-                                                  ├── reports/
-                                                  │   └── {repo}/
-                                                  │       ├── latest-security.md
-                                                  │       └── latest-sbom.md
-                                                  └── .github/workflows/
+Source Repo A   ──┐
+Source Repo B   ──┼──► (PAT push on merge) ──► <your-username>/security-scans
+Source Repo C   ──┘                                 ├── findings/
+                                                   │    └── {repo}/
+                                                   │        └── {YYYY-MM-DD}/
+                                                   │            └── {run-id}/
+                                                   ├── reports/
+                                                   │    └── {repo}/
+                                                   │        ├── latest-security.md
+                                                   │        └── latest-sbom.md
+                                                   └── .github/workflows/
 ```
 
 ## What Gets Scanned
@@ -47,13 +47,13 @@ exactly what was found and where — no manual review step needed.
 ```
 ## 🟠 Security Scan Results
 
-| Tool         | Critical | High | Medium | Low |
-|--------------|----------|------|--------|-----|
-| Semgrep SAST | 0        | 1    | 3      | 2   |
-| Semgrep SCA  | 0        | 0    | 1      | 0   |
-| Grype        | 0        | 2    | 1      | 4   |
-| Gitleaks     | 0        | 1    | 0      | 0   |
-| **Total**    | **0**    | **4**| **5**  | **6** |
+| Tool          | Critical | High | Medium | Low |
+|---------------|----------|------|--------|-----|
+| Semgrep SAST  | 0         | 1    | 3      | 2   |
+| Semgrep SCA   | 0         | 0    | 1      | 0   |
+| Grype         | 0         | 2    | 1      | 4   |
+| Gitleaks      | 0         | 1    | 0      | 0   |
+| **Total**     | **0**     | **4**| **5**  | **6** |
 ```
 
 **High & Critical Findings** (only when High/Critical findings exist):
@@ -62,19 +62,19 @@ exactly what was found and where — no manual review step needed.
 ### High & Critical Findings
 
 #### Semgrep SAST
-| Sev     | Rule            | File        | Line | Description                       |
-|---------|-----------------|-------------|------|-----------------------------------|
-| 🟠 HIGH | `sql-injection` | `app/db.py` | 42   | Unsanitised input passed to query |
+| Sev      | Rule             | File         | Line | Description                        |
+|----------|-----------------|--------------|------|------------------------------------|
+| 🟠 HIGH  | `sql-injection` | `app/db.py`  | 42   | Unsanitised input passed to query  |
 
 #### Grype
-| Sev     | CVE            | Package    | Version | Fixed In |
-|---------|----------------|------------|---------|----------|
-| 🟠 HIGH | CVE-2023-12345 | `requests` | 2.28.0  | 2.31.0   |
+| Sev      | CVE             | Package     | Version | Fixed In |
+|----------|-----------------|-------------|---------|----------|
+| 🟠 HIGH  | CVE-2023-12345 | `requests`  | 2.28.0  | 2.31.0   |
 
 #### Gitleaks
-| Rule               | File        | Line | Commit     | Description      |
-|--------------------|-------------|------|------------|------------------|
-| `aws-access-token` | `config.py` | 15   | `abc12345` | AWS Access Token |
+| Rule                | File         | Line | Commit      | Description       |
+|---------------------|--------------|------|-------------|-------------------|
+| `aws-access-token` | `config.py`  | 15   | `abc12345`  | AWS Access Token  |
 ```
 
 Findings are pushed to the central hub only when code merges to `main`/`master`.
@@ -99,43 +99,70 @@ GITHUB_TOKEN=ghp_xxxx ./scripts/add-scanning-to-repo.sh <owner>/my-app
 
 Follow **[docs/add-scanning-to-repo.md](docs/add-scanning-to-repo.md)** for details.
 
+## Scripts Reference
+
+| Script | Purpose | Usage |
+|--------|---------|-------|
+| `setup-central-repo.sh` | One-time hub setup: creates security-scans repo, provisions SECURITY_SCAN_TOKEN | `GITHUB_TOKEN=ghp_xxxx ./scripts/setup-central-repo.sh` |
+| `add-scanning-to-repo.sh` | Install workflow + secret on a target repo, opens PR | `GITHUB_TOKEN=ghp_xxxx ./scripts/add-scanning-to-repo.sh <owner/repo>` |
+| `update-scanning-in-repo.sh` | Update workflow to latest template, opens PR | `GITHUB_TOKEN=ghp_xxxx ./scripts/update-scanning-in-repo.sh <owner/repo>` |
+| `remove-scanning-from-repo.sh` | Remove workflow + secret, opens PR (optional `--purge-hub`) | `GITHUB_TOKEN=ghp_xxxx ./scripts/remove-scanning-from-repo.sh <owner/repo> [--purge-hub]` |
+| `manage-semgrep-tokens.sh` | Set SEMGREP_APP_TOKEN secret on a target repo | `GITHUB_TOKEN=ghp_xxxx ./scripts/manage-semgrep-tokens.sh <owner/repo> <token>` |
+| `generate-reports.js` | Generate markdown reports from local artifacts (in repo) | `node scripts/generate-reports.js <central-repo-dir>` |
+| `central-repo/scripts/generate_report.py` | Generate consolidated cross-repo reports from findings | `cd central-repo && python3 scripts/generate_report.py` |
+
+### When to Use Each Script
+
+| Task | Script |
+|------|--------|
+| Initial setup | `setup-central-repo.sh` |
+| Onboard new repo | `add-scanning-to-repo.sh` |
+| Update workflow template | `update-scanning-in-repo.sh` |
+| Remove scanning from repo | `remove-scanning-from-repo.sh` |
+| Rotate Semgrep token | `manage-semgrep-tokens.sh` |
+| Generate reports manually | `generate-reports.js` or `generate_report.py` |
+
 ## Repository Layout
 
 ```
 scripts/
-  setup-central-repo.sh        ← creates the hub, provisions SECURITY_SCAN_TOKEN
-  add-scanning-to-repo.sh      ← installs workflow + secret, opens add PR
-  update-scanning-in-repo.sh   ← updates workflow to latest template, opens update PR
-  remove-scanning-from-repo.sh ← removes workflow + secret, opens remove PR
+  setup-central-repo.sh           ← creates the hub, provisions SECURITY_SCAN_TOKEN
+  add-scanning-to-repo.sh         ← installs workflow + secret, opens add PR
+  update-scanning-in-repo.sh      ← updates workflow to latest template, opens update PR
+  remove-scanning-from-repo.sh   ← removes workflow + secret, opens remove PR
+  manage-semgrep-tokens.sh        ← set SEMGREP_APP_TOKEN on target repos
+  generate-reports.js             ← generate reports from local artifacts
 
 templates/
-  security-scan.yml            ← the workflow; installed by add-scanning-to-repo.sh
+  security-scan.yml               ← the workflow; installed by add-scanning-to-repo.sh
 
 docs/
-  central-repo-setup.md        ← hub setup reference
-  add-scanning-to-repo.md      ← per-repo onboarding reference
-  manage-semgrep-tokens.md     ← Semgrep Pro token management
+  central-repo-setup.md           ← hub setup reference
+  add-scanning-to-repo.md         ← per-repo onboarding reference
+  manage-semgrep-tokens.md        ← Semgrep Pro token management
 
-central-repo/                  ← files pushed into the security-scans hub by setup script
+central-repo/
+  scripts/generate_report.py      ← cross-repo report generation
+   .github/workflows/             ← hub workflows
 ```
 
 ## Token Flow
 
 ```
 setup-central-repo.sh
-  → prompts for SECURITY_SCAN_TOKEN (browser UI — GitHub API cannot create PATs)
-  → validates token against the hub
-  → saves to .env (project root, gitignored)
+   → prompts for SECURITY_SCAN_TOKEN (browser UI — GitHub API cannot create PATs)
+   → validates token against the hub
+   → saves to .env (project root, gitignored)
 
 add-scanning-to-repo.sh
-  → reads SECURITY_SCAN_TOKEN from .env
-  → sets it as a secret on the target repo automatically
-  → opens PR
+   → reads SECURITY_SCAN_TOKEN from .env
+   → sets it as a secret on the target repo automatically
+   → opens PR
 
 remove-scanning-from-repo.sh
-  → deletes SECURITY_SCAN_TOKEN secret from the target repo immediately
-  → opens PR to remove the workflow file
-  → --purge-hub also deletes findings/{repo}/ from security-scans
+   → deletes SECURITY_SCAN_TOKEN secret from the target repo immediately
+   → opens PR to remove the workflow file
+   → --purge-hub also deletes findings/{repo}/ from security-scans
 ```
 
 ## SBOM Notes
