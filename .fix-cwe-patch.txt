@@ -1,1 +1,0 @@
-const cwes = (x.extra?.metadata?.cwe||[]).map(c => typeof c === "number" ? "CWE-"+c : c);
