@@ -159,17 +159,53 @@ jobs:
       - name: Install Syft
         run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
 
+
+      - name: Check for package manifests
+        run: |
+          echo "=== Scanning: ${{ github.workspace }} ==="
+          find "${{ github.workspace }}" -maxdepth 3 \( -name "requirements.txt" -o -name "package.json" -o -name "go.sum" -o -name "Gemfile.lock" \) 2>/dev/null
+          echo "---"
+          if [ -f "${{ github.workspace }}/requirements.txt" ]; then
+            echo "requirements.txt FOUND:"
+            cat "${{ github.workspace }}/requirements.txt"
+          else
+            echo "requirements.txt NOT FOUND"
+          fi
+
       - name: Generate SBOM
         run: |
-          syft "${{ github.workspace }}" \
-            -o cyclonedx-json=sbom.cyclonedx.json \
-            --exclude '**/.github/workflows/security-scan.yml' \
-            || true
+          syft "dir:${{ github.workspace }}" \
+              -o cyclonedx-json=sbom.cyclonedx.json \
+              --exclude '**/.github/**' \
+              --exclude '**/.git/**' \
+              || true
 
-      - name: Report SBOM component count
+          # Clean SBOM: remove Go toolchain deps from embedded binaries
+          if [ -f sbom.cyclonedx.json ]; then
+            jq '.components = [.components[] | select(
+              .type != "go" and
+              .name != "stdlib" and
+              (.name | startswith("github.com/anchore/") | not) and
+              (.name | startswith("github.com/anchore-") | not) and
+              (.name | startswith("go.opentelemetry.") | not) and
+              (.name | startswith("golang.org") | not) and
+              (.name | startswith("google.golang.") | not)
+            )]' sbom.cyclonedx.json > sbom.clean.json && mv sbom.clean.json sbom.cyclonedx.json
+            echo "Cleaned SBOM: $(jq '.components | length' sbom.cyclonedx.json) components remaining"
+          fi
+
+      - name: Debug SBOM
         if: always()
         run: |
-          echo "SBOM components: $(jq '.components | length' sbom.cyclonedx.json 2>/dev/null || echo 'SBOM file missing or invalid')"
+          if [ -f sbom.cyclonedx.json ]; then
+            echo "SBOM file exists, size: $(wc -c < sbom.cyclonedx.json) bytes"
+            echo "Components: $(jq ".components | length // 0" sbom.cyclonedx.json 2>/dev/null || echo unknown)"
+            echo "First 5 components:"
+            jq -r ".components[:5][] | \"\(.name) @ \(.version)\"" sbom.cyclonedx.json 2>/dev/null || echo "No components"
+          else
+            echo "ERROR: SBOM file not found"
+            ls -la
+          fi
 
       - name: Install Grype
         run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
@@ -466,7 +502,7 @@ jobs:
                 const refUrl = x.extra?.metadata?.references?.[0]||"";
                 const ruleLink = refUrl?"[`"+shortRule+`"](`+refUrl+")":"`"+shortRule+"`";
                 const desc = (x.extra?.message||"").slice(0,150);
-                sec += h(sev+" | "+ruleLink+" | `"+(x.path||"")+"` | "+x.start?.line+" | "+desc);                
+                sec += "\n"+h(sev+" | "+ruleLink+" | `"+(x.path||"")+"` | "+x.start?.line+" | "+desc);
               });
             } else { sec += "_No findings._\n"; }
             // Finding details for SAST
@@ -508,7 +544,7 @@ jobs:
                 const sev = sevMap[x.extra?.severity]||"🔵 LOW";
                 const rule = (x.check_id||"").split(".").pop()||"—";
                 const desc = (x.extra?.message||"").slice(0,150);
-                sec += h(sev+" | `"+rule+"` | — | — | "+desc);
+                sec += "\n"+h(sev+" | `"+rule+"` | — | — | "+desc);
               });
             } else { sec += "_No findings._\n"; }
 
@@ -526,7 +562,7 @@ jobs:
                 const cveUrl = v.urls?.[0]||"https://nvd.nist.gov/vuln/detail/"+(v.id||"").replace(/_/g,"/");
                 const cveLink = "["+cveId+"](https://nvd.nist.gov/vuln/detail/"+cveId.replace(/_/g,"/")+")";
                 const fixedIn = (v.fix?.versions||[]).join(", ")||"—";
-                sec += h(sevLabel+" | "+cveLink+(v.url?" [link]("+v.url+")":"")+" | `"+(a.name||"")+"` | "+(a.version||"")+" | "+fixedIn+" | "+(a.type||"")+" |");
+                sec += "\n"+h(sevLabel+" | "+cveLink+(v.url?" [link]("+v.url+")":"")+" | `"+(a.name||"")+"` | "+(a.version||"")+" | "+fixedIn+" | "+(a.type||"")+" |");
               });
               // Grype finding details
               sec += "\n\n<details><summary>Vulnerability details</summary>\n";
@@ -557,7 +593,7 @@ jobs:
               glArray.forEach(g=>{
                 const sev = "🟠 HIGH";
                 const desc = g.Rule||g.Secret||"—";
-                sec += h(sev+" | `"+(g.File||"")+"` | "+(g.StartLine||"")+" | `"+((g.Commit||"").slice(0,8)||"")+"` | "+desc);
+                sec += "\n"+h(sev+" | `"+(g.File||"")+"` | "+(g.StartLine||"")+" | `"+((g.Commit||"").slice(0,8)||"")+"` | "+desc);
               });
               // Gitleaks finding details
               sec += "\n\n<details><summary>Finding details</summary>\n";
@@ -589,7 +625,7 @@ jobs:
             comps.forEach(c=>{
               const key=(c.name+"@"+c.version).toLowerCase();
               const flag=vulnKeys.has(key)?"⚠️":"✅";
-              sb += h((c.name||"-")+" | "+(c.version||"-")+" | "+(c.type||"-")+" | "+flag+" |");
+              sb += "\n"+h((c.name||"-")+" | "+(c.version||"-")+" | "+(c.type||"-")+" | "+flag+" |");
             });
             fs.writeFileSync(runDir+"/sbom.md", sb);
             fs.writeFileSync(base+"/latest-sbom.md", sb);

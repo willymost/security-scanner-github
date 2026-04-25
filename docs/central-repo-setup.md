@@ -8,7 +8,7 @@ Run **one script** to create and fully configure the `security-scans` hub repo.
 
 | Requirement | Notes |
 |-------------|-------|
-| `git`, `curl`, `jq` | Standard CLI tools |
+| `git`, `curl`, `jq`, `node` | Standard CLI tools |
 | `python3` | Needed only if adding source-repo secrets in the same run |
 | `GITHUB_TOKEN` | Classic PAT with `repo` scope, or a fine-grained PAT with **Administration:Write + Contents:Write** (+ **Secrets:Write** on source repos if adding secrets in the same run) |
 
@@ -88,3 +88,4 @@ When `SECURITY_SCAN_TOKEN` expires (1 year):
      my-app my-api other-repo
    ```
 3. Delete the expired token from GitHub Developer Settings.
+

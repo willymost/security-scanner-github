@@ -85,9 +85,11 @@ annotations on the Security tab.
 1. Watch the **Actions** run. All five jobs should pass:
    `semgrep-sast`, `semgrep-sca`, `sca`, `gitleaks`, `push-to-central`
    *(no `pr-annotation` on a push event — that only runs on PRs)*
-2. In `<your-username>/security-scans`, check `findings/<repo-name>/` for a
+2. In `<your-username>/security-scans`, check `findings/{repo}/` for a
    new directory.
-3. In the source repo, go to **Security → Code scanning alerts** to see
+3. Check `reports/{repo}/latest-security.md` and `reports/{repo}/latest-sbom.md`
+   in the central hub for the generated markdown reports.
+4. In the source repo, go to **Security → Code scanning alerts** to see
    per-finding detail (if SARIF upload is enabled).
 
 ---
@@ -113,6 +115,23 @@ not appear for external contributors' PRs. This is a GitHub security restriction
 
 ---
 
+## SBOM Behaviour
+
+The workflow generates a CycloneDX SBOM using Syft. Key details:
+
+- **Syft excludes `.github/**` and `.git/**` directories** — this means GitHub
+  Actions used by the repo (e.g. `actions/checkout`) are not catalogued as
+  packages. Only actual software dependencies appear.
+- **Syft scans `node_modules/`** but requires `package-lock.json` to detect npm
+  packages. Without a lockfile, npm dependencies may be missing from the SBOM.
+- **Python dependencies** need version pins (e.g. `requests==2.31.0`) in
+  `requirements.txt` to be catalogued. Unpinned entries (`requests>=2.0`) are
+  silently skipped (syft v1.43.0 limitation).
+- **False positive cleanup**: If the repo contains an embedded Go binary (like
+  `bin/syft`), the workflow removes Go toolchain dependencies from the SBOM.
+
+---
+
 ## Customization
 
 Edit `.github/workflows/security-scan.yml` in the source repo after installing:
@@ -126,7 +145,7 @@ Edit `.github/workflows/security-scan.yml` in the source repo after installing:
 | Scan schedule | `on.schedule` | change cron expression |
 | Branches scanned | `on.push.branches` | add `develop` |
 | Enable Semgrep Pro rules | env section | add `SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}` |
-| PR detail cap | `pr-annotation` job | change `MAX_PER_TOOL` constant (default 20) |
+| PR detail cap | each job's PR comment step | change `MAX_PER_TOOL` constant (default 20) |
 
 ---
 
@@ -134,5 +153,5 @@ Edit `.github/workflows/security-scan.yml` in the source repo after installing:
 
 1. Delete `.github/workflows/security-scan.yml` from the source repo.
 2. Remove `SECURITY_SCAN_TOKEN` from the repo's secrets (if per-repo).
-3. Optionally delete `findings/<repo-name>/` from the hub to stop that repo
-   from appearing in reports.
+3. Optionally delete `findings/{repo}/` from the hub to stop that repo
+   from appearing in reports. Use `./scripts/remove-scanning-from-repo.sh --purge-hub`.

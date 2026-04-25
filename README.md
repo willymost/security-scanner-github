@@ -1,8 +1,8 @@
 # Security Scanning Templates
 
 This repository provides GitHub Actions workflow templates and documentation for
-automated security scanning across your personal repositories. It is the
-**template library** — not the findings store.
+automated security scanning across your repositories. It is the **template library** —
+not the findings store.
 
 ## Architecture
 
@@ -11,13 +11,19 @@ automated security scanning across your personal repositories. It is the
 │  templates/security-scan.yml   ← copy to each source repo       │
 │  docs/central-repo-setup.md    ← one-time hub setup guide       │
 │  docs/add-scanning-to-repo.md  ← per-repo onboarding guide      │
-└────────────────────────────────────────────────────────────────-┘
+└─────────────────────────────────────────────────────────────────┘
                     ↑ developers reference this repo
 
 Source Repo A  ──┐
 Source Repo B  ──┼──► (PAT push on merge) ──► <your-username>/security-scans
 Source Repo C  ──┘                                ├── findings/
-                                                  ├── reports/latest.md
+                                                  │   └── {repo}/
+                                                  │       └── {YYYY-MM-DD}/
+                                                  │           └── {run-id}/
+                                                  ├── reports/
+                                                  │   └── {repo}/
+                                                  │       ├── latest-security.md
+                                                  │       └── latest-sbom.md
                                                   └── .github/workflows/
 ```
 
@@ -27,14 +33,14 @@ Source Repo C  ──┘                                ├── findings/
 |------|------|-------|
 | Semgrep SAST | Static Analysis | Code vulnerabilities, injection, insecure patterns |
 | Semgrep SCA | Supply Chain Analysis | Vulnerable/reachable dependencies |
-| Grype + Syft | Dependency Scanning | CVEs in dependencies, generates CycloneDX SBOM |
+| Syft + Grype | SBOM + Dependency Scanning | Software Bill of Materials (CycloneDX JSON) + CVEs in dependencies |
 | Gitleaks | Secret Scanning | Hardcoded secrets, API keys, credentials in code and git history |
 
 ## Per-PR Behaviour
 
-On every pull request the workflow posts a comment with a severity summary
-table and, when any High or Critical findings exist, a per-tool detail section
-listing exactly what was found and where — no manual review step needed.
+On every pull request the workflow posts a comment with a severity summary table
+and, when any High or Critical findings exist, a per-tool detail section listing
+exactly what was found and where — no manual review step needed.
 
 **Summary table** (always present):
 
@@ -103,13 +109,14 @@ scripts/
   remove-scanning-from-repo.sh ← removes workflow + secret, opens remove PR
 
 templates/
-  security-scan.yml          ← the workflow; installed by add-scanning-to-repo.sh
+  security-scan.yml            ← the workflow; installed by add-scanning-to-repo.sh
 
 docs/
-  central-repo-setup.md      ← hub setup reference
-  add-scanning-to-repo.md    ← per-repo onboarding reference
+  central-repo-setup.md        ← hub setup reference
+  add-scanning-to-repo.md      ← per-repo onboarding reference
+  manage-semgrep-tokens.md     ← Semgrep Pro token management
 
-central-repo/                ← files pushed into the security-scans hub by setup script
+central-repo/                  ← files pushed into the security-scans hub by setup script
 ```
 
 ## Token Flow
@@ -131,8 +138,24 @@ remove-scanning-from-repo.sh
   → --purge-hub also deletes findings/{repo}/ from security-scans
 ```
 
+## SBOM Notes
+
+The Syft SBOM generation (syft v1.43.0) has these behaviours and limitations:
+
+- **Excluded directories**: `**/.github/**` (GitHub Actions YAML files are not
+  catalogued as packages) and `**/.git/**` (git internals).
+- **Unpinned Python dependencies**: entries in `requirements.txt` without version
+  pins (`==x.y.z`) are **not catalogued**. Pin your dependencies for full coverage.
+- **NPM packages**: require `package-lock.json` to be detected from `node_modules/`.
+  Without a lockfile, npm dependencies are invisible to Syft.
+- **Embedded binaries**: repos that ship a Go binary (e.g. `bin/syft`) will have the
+  binary's embedded dependencies catalogued as false positives. The workflow includes
+  a cleanup step that strips known Go toolchain artifacts.
+
 ## Notes on Severity
 
 Semgrep community rules (`--config auto`) do not emit a CRITICAL severity level —
 findings top out at HIGH. To unlock CRITICAL-tagged rules and more precise severity
 metadata, add a `SEMGREP_APP_TOKEN` secret (from semgrep.dev) to the source repo.
+
+Grype does produce CRITICAL findings for dependencies with CVSS ≥ 9.0.
